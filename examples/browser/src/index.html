@@ -3,59 +3,63 @@
     <head>
         <meta charset="UTF-8" />
         <title>MDB Reader</title>
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <link rel="stylesheet" href="https://unpkg.com/ag-grid-community/styles/ag-grid.css">
-        <link rel="stylesheet" href="https://unpkg.com/ag-grid-community/styles/ag-theme-alpine.css">
-                <style>
-                    /* Edward Tufte inspired minimal table styling */
-                      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #fff; color: #111; margin: 0; }
-                      h3 { font-weight: 600; font-family: inherit; }
-                    /* make ag-grid render with subtle rules, light headers */
-                                            .ag-theme-alpine { 
-                                                --ag-background-color: #fff;
-                                                --ag-foreground-color: #111;
-                                                --ag-header-background-color: transparent;
-                                                --ag-odd-row-background-color: rgba(0,0,0,0.00);
-                                                --ag-row-border-color: rgba(0,0,0,0.06);
-                                                font-size: 13px;
-                                            }
-                      .ag-theme-alpine .ag-header { background: transparent; color: #222; border-bottom: 1px solid rgba(0,0,0,0.08); }
-                    .ag-theme-alpine .ag-root-wrapper { box-shadow: none; border: none; }
-                      .ag-theme-alpine .ag-cell { border-bottom: 1px solid rgba(0,0,0,0.04); padding: 6px 8px; font-family: inherit; }
-                    .ag-theme-alpine .ag-row { background: transparent; }
-                    .ag-theme-alpine .ag-header-cell-label { font-weight: 600; color: #333; }
-                    /* make filter icons subtle */
-                    .ag-theme-alpine .ag-icon { opacity: 0.6 }
-                      /* rotated headers */
-                      .ag-theme-alpine .ag-header-cell { padding: 0; }
-                      .ag-theme-alpine .ag-header-cell-label { height: 44px; align-items: flex-end; display:flex; padding:0 6px; overflow: visible; }
-                      .ag-theme-alpine .ag-header-cell-label .ag-header-cell-text,
-                      .ag-theme-alpine .ag-header-cell-label .ag-text { transform: rotate(-45deg); transform-origin: left bottom; white-space: nowrap; display: inline-block; overflow: visible; }
-                      .ag-theme-alpine .ag-header-viewport, .ag-theme-alpine .ag-header-cell { overflow: visible !important; }
-                </style>
-                <script type="module" src="index.mjs"></script>
+
+        <script type="module" src="index.mjs"></script>
     </head>
     <body>
-        <div style="padding:10px;display:flex;gap:10px;height:100vh;box-sizing:border-box;">
-            <div style="flex:0 0 360px;display:flex;flex-direction:column;">
-                <div style="margin-bottom:8px;">
-                    <input type="file" id="input" />
-                    <button type="button" id="button">Load</button>
-                    <small id="status" style="margin-left:8px;color:#666"></small>
+        <div id="container">
+            <div id="left" class="panel left-panel">
+                <div class="panel-controls" style="padding:6px 8px; display:flex; gap:8px; align-items:center;">
+                    <input type="file" id="fileInput" accept=".mdb,.accdb" style="display:none" />
+                    <button id="uploadBtn" title="Upload file" aria-label="Upload" style="background:none;border:none;padding:4px;cursor:pointer">
+                        <!-- upload SVG icon -->
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 3v10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M5 10l7-7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M21 21H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                    <span id="status"></span>
                 </div>
-                <div id="tablesGrid" class="ag-theme-alpine" style="flex:1 1 auto;width:100%;"></div>
+                <div id="leftGrid" class="ag-theme-alpine grid"></div>
             </div>
 
-            <div style="flex:1 1 auto;display:flex;flex-direction:column;">
-                <div style="margin-bottom:8px;display:flex;align-items:center;gap:12px;">
-                    <h3 id="currentTable" style="margin:0">No table selected</h3>
-                    <div id="tableInfo" style="color:#666"></div>
-                    <div style="flex:1"></div>
-                    <button id="openUrl" style="display:none">Open table in new tab</button>
-                </div>
-                <div id="rowsGrid" class="ag-theme-alpine" style="flex:1 1 auto;width:100%;"></div>
+            <div id="divider" class="divider" title="Drag to resize"></div>
+
+            <div id="right" class="panel right-panel">
+                <div id="rightGrid" class="ag-theme-alpine grid"></div>
             </div>
         </div>
+
+        <div id="dropHint">Drop an .mdb / .accdb file anywhere to load</div>
+
+        <style>
+            body { font-family: system-ui, -apple-system, Arial; margin: 0; height: 100vh; display: flex; flex-direction: column; }
+            #container{ display:flex; flex:1; gap:0; padding:12px }
+            .panel{ display:flex; flex-direction:column; min-width:0 }
+            .left-panel{ flex: 0 0 340px; width:340px; }
+            .right-panel{ flex: 1 1 auto; }
+            .divider{ width:8px; cursor:col-resize; background:linear-gradient(90deg, transparent, rgba(0,0,0,0.06), transparent); margin:0; border-radius:4px }
+            /* panel titles removed */
+            .grid{ flex:1; min-height:0; }
+            #dropHint{ position:fixed; right:12px; bottom:12px; background:#222; color:#fff; padding:8px 12px; border-radius:6px; opacity:0.85; }
+            input[type=file]{ padding:4px }
+            .panel-controls.drag-invalid { opacity: 0.35; }
+            .panel-controls.drag-valid { opacity: 1; }
+            .header-tooltip{
+                position: absolute;
+                background: #fff;
+                color: #111;
+                border: 1px solid rgba(0,0,0,0.12);
+                padding: 6px 8px;
+                border-radius: 4px;
+                box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+                z-index: 2147483647; /* very high */
+                white-space: nowrap;
+                pointer-events: none;
+                font-size: 13px;
+            }
+        </style>
 
     </body>
 </html>

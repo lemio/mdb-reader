@@ -7,9 +7,9 @@
         "build": "rimraf dist && parcel build"
     },
     "dependencies": {
-        "ag-grid-community": "^29.3.3",
         "buffer": "6.0.3",
-        "mdb-reader": "3.1.0"
+        "mdb-reader": "3.1.0",
+        "ag-grid-community": "^29.3.3"
     },
     "devDependencies": {
         "events": "3.3.0",

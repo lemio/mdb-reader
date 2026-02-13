@@ -1,398 +1,521 @@
 import { Buffer } from "buffer/";
 import MDBReader from "mdb-reader";
+
+import { Grid } from 'ag-grid-community';
 import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
-import { Grid } from 'ag-grid-community';
 
-const button = document.getElementById("button");
-const input = document.getElementById("input");
-const status = document.getElementById("status");
-const currentTableEl = document.getElementById("currentTable");
-const tableInfo = document.getElementById("tableInfo");
+// Wrap all DOM-dependent initialisation in DOMContentLoaded so the script can live in <head>
+document.addEventListener('DOMContentLoaded', () => {
+    const input = document.getElementById('fileInput');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const status = document.getElementById('status');
 
-const tablesGridDiv = document.getElementById('tablesGrid');
-const rowsGridDiv = document.getElementById('rowsGrid');
+    const leftGridDiv = document.getElementById('leftGrid');
+    const rightGridDiv = document.getElementById('rightGrid');
 
-let reader = null;
-let tables = [];
-let tableMap = new Map();
+    let reader = null;
+    let tableMap = new Map();
 
-// AG Grid instances
-let tablesGrid;
-let rowsGrid;
-let tablesGridOptions;
-let rowsGridOptions;
-
-// relationship cache (heuristic)
-let relationships = [];
-
-button.addEventListener("click", () => loadFile());
-input.addEventListener('change', () => loadFile());
-
-// support drag & drop of a file anywhere on the page
-window.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
-window.addEventListener('drop', (e) => {
-    e.preventDefault();
-    const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) {
-        // set the input.files where possible for consistency
-        try { input.files = e.dataTransfer.files; } catch (err) { /* readonly in some browsers */ }
-        loadFile(f);
-    }
-});
-
-function setStatus(text) {
-    status.innerText = text;
-}
-
-// --- localStorage helpers: save/load file as base64 so refresh preserves state ---
-function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    const chunkSize = 0x8000; // 32KB chunks
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-    }
-    return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64) {
-    const binary = atob(base64);
-    const len = binary.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes.buffer;
-}
-
-function saveFileToLocalStorage(base64, name) {
-    try {
-        localStorage.setItem('mdb-reader:lastFile', base64);
-        localStorage.setItem('mdb-reader:lastFileName', name || '');
-        setStatus('Saved to local storage');
-    } catch (e) {
-        console.warn('Could not save to localStorage', e);
-        setStatus('Loaded (localStorage save failed)');
-    }
-}
-
-async function tryLoadFromLocalStorage() {
-    const base64 = localStorage.getItem('mdb-reader:lastFile');
-    if (!base64) return;
-    setStatus('Loading last file from local storage...');
-    try {
-        const ab = base64ToArrayBuffer(base64);
-        const buf = Buffer.from(ab);
-        reader = new MDBReader(buf);
-        await buildTablesList();
-        setStatus('Loaded from local storage');
-    } catch (e) {
-        console.error('Failed to load from localStorage', e);
-        setStatus('Failed to load saved DB');
-    }
-}
-
-async function loadFile(droppedFile) {
-    setStatus('Loading file...');
-    let file = droppedFile;
-    if (!file) {
-        const files = input.files;
-        if (!files || files.length !== 1) return setStatus('Select one file');
-        file = files[0];
-    }
-
-    const fr = new FileReader();
-    fr.onload = async (e) => {
-        try {
-            const buf = Buffer.from(e.target.result);
-            reader = new MDBReader(buf);
-            // persist in localStorage so refresh keeps DB
-            try {
-                const base64 = arrayBufferToBase64(e.target.result);
-                saveFileToLocalStorage(base64, file.name);
-            } catch (err) {
-                console.warn('localStorage save failed', err);
+    const leftGridOptions = {
+        columnDefs: [
+            { field: 'name', headerName: 'Table', sortable: true, filter: true, flex: 1 },
+            { field: 'rowCount', headerName: 'Rows', sortable: true, filter: 'agNumberColumnFilter', width: 120 }
+        ],
+        rowData: [],
+        rowSelection: 'single',
+        onRowClicked: (e) => {
+            if (e && e.data) {
+                showTable(e.data.name);
             }
-            await buildTablesList();
-            setStatus('Loaded');
-        } catch (err) {
-            console.error(err);
-            setStatus('Error loading file: ' + err.message);
         }
     };
-    fr.readAsArrayBuffer(file);
-}
 
-async function buildTablesList() {
-    const names = reader.getTableNames();
-    tables = await Promise.all(names.map(async (name) => {
+    const rightGridOptions = {
+        columnDefs: [],
+        rowData: [],
+        defaultColDef: { sortable: true, filter: true, resizable: true, floatingFilter: true },
+        animateRows: true,
+        suppressRowClickSelection: false
+    };
+
+    new Grid(leftGridDiv, leftGridOptions);
+    new Grid(rightGridDiv, rightGridOptions);
+
+    // Header overlay for full header text when hovering any cell in the column
+    let headerOverlay = null;
+    let headerOriginalCell = null;
+    function removeHeaderOverlay() {
+        if (headerOverlay && headerOverlay.parentNode) headerOverlay.parentNode.removeChild(headerOverlay);
+        headerOverlay = null;
+        if (headerOriginalCell) {
+            headerOriginalCell.style.visibility = '';
+            headerOriginalCell = null;
+        }
+    }
+
+    function showHeaderOverlayForColumn(col) {
         try {
-            const t = reader.getTable(name);
-            const rc = t.rowCount;
-            tableMap.set(name, t);
-            return { name, rowCount: rc };
-        } catch (e) {
-            return { name, rowCount: 0 };
-        }
-    }));
+            if (!col) return;
+            const colId = col.getColId();
+            const headerTextEl = document.querySelector(`.ag-header-cell[col-id="${colId}"] .ag-header-cell-text`);
+            if (!headerTextEl) return;
+            const headerCellEl = headerTextEl.closest('.ag-header-cell');
+            if (!headerCellEl) return;
+            // only show if truncated
+            if (headerTextEl.scrollWidth <= headerTextEl.clientWidth) return;
 
-    // build a simple relationships cache by attempting to read MSysRelationships if present
-    try {
-        const relTable = reader.getTable('MSysRelationships');
-        const rels = relTable.getData({rowLimit: 10000});
-        // store raw rel rows for hover/click heuristics
-        relationships = rels;
-    } catch (e) {
-        relationships = [];
-    }
+            const rect = headerCellEl.getBoundingClientRect();
 
-    renderTablesGrid();
-}
+            removeHeaderOverlay();
+            // clone the entire header cell so the background and padding match exactly
+            headerOverlay = headerCellEl.cloneNode(true);
+            // hide the original cell content so overlay effectively replaces it
+            headerOriginalCell = headerCellEl;
+            headerOriginalCell.style.visibility = 'hidden';
 
-function renderTablesGrid() {
-    const columnDefs = [
-        { field: 'name', headerName: 'Table', sortable: true, filter: true, flex: 1 },
-        { field: 'rowCount', headerName: 'Rows', sortable: true, filter: 'agNumberColumnFilter', width: 110 }
-    ];
-
-        tablesGridOptions = {
-            columnDefs,
-            rowData: tables,
-            rowSelection: 'single',
-                onRowClicked: (e) => {
-                    selectTable(e.data.name);
-                },
-                onSelectionChanged: (e) => {
-                    const sel = e.api.getSelectedRows();
-                    if (sel && sel[0]) selectTable(sel[0].name);
-                },
-            onFirstDataRendered: (params) => params.api.sizeColumnsToFit(),
-            defaultColDef: { resizable: true },
-        };
-
-        if (tablesGrid) {
-            // options.api should be available after initial grid creation
-            if (tablesGridOptions && tablesGridOptions.api) {
-                tablesGridOptions.api.setRowData(tables);
-                // auto-size table list columns to fit content
-                try {
-                // auto-size but skip header width to ignore label size
-                tablesGridOptions.columnApi && tablesGridOptions.columnApi.autoSizeColumns(['name','rowCount'], true);
-            } catch (e) {}
-            }
-            return;
-        }
-        tablesGrid = new Grid(tablesGridDiv, tablesGridOptions);
-        setTimeout(() => {
-            try {
-                tablesGridOptions.columnApi && tablesGridOptions.columnApi.autoSizeColumns(['name','rowCount'], true);
-            } catch (e) {}
-        }, 50);
-}
-
-function selectTable(name) {
-    const tbl = tableMap.get(name);
-    if (!tbl) return;
-    currentTableEl.innerText = name;
-    tableInfo.innerText = `${tbl.columnCount} columns • ${tbl.rowCount} rows`;
-
-    // load first N rows for display (limit to avoid freezing large DBs)
-    const rows = tbl.getData({ rowLimit: 5000 });
-
-    renderRowsGrid(name, tbl.getColumnNames(), rows);
-
-    // highlight selection in tables grid
-    highlightTableInList(name);
-}
-
-function renderRowsGrid(tableName, columnNames, rows) {
-    // Build column definitions where width is computed from cell content only (ignore header label width)
-    // For performance we sample rows when dataset is large.
-    function measureTextWidth(text, font) {
-        const ctx = document._agMeasureCtx || (document._agMeasureCtx = document.createElement('canvas').getContext('2d'));
-        ctx.font = font || getComputedStyle(rowsGridDiv).font || '13px system-ui';
-        return Math.ceil(ctx.measureText(String(text)).width);
-    }
-
-    // Determine font used in grid cells (approx)
-    const gridFont = (() => {
-        const cs = getComputedStyle(rowsGridDiv);
-        const fontSize = cs.fontSize || '13px';
-        const fontFamily = cs.fontFamily || '-apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif';
-        return `${fontSize} ${fontFamily}`;
-    })();
-
-    // sample rows up to a limit for measurement
-    const SAMPLE_LIMIT = 1000;
-    let sampleRows = rows || [];
-    if (sampleRows.length > SAMPLE_LIMIT) {
-        // evenly sample SAMPLE_LIMIT rows across the dataset
-        const step = Math.max(1, Math.floor(sampleRows.length / SAMPLE_LIMIT));
-        const sampled = [];
-        for (let i = 0; i < sampleRows.length; i += step) sampled.push(sampleRows[i]);
-        sampleRows = sampled.slice(0, SAMPLE_LIMIT);
-    }
-
-    const columnDefs = columnNames.map(c => {
-        // detect numeric-only columns (based on loaded rows)
-        const isNumeric = rows && rows.length > 0 && rows.every(r => r[c] === null || typeof r[c] === 'number');
-
-        // compute max width of the cell content sample for this column
-        let maxWidth = 24; // minimal width
-        for (let i = 0; i < sampleRows.length; ++i) {
-            const v = sampleRows[i][c];
-            if (v === null || v === undefined) continue;
-            const str = (typeof v === 'object') ? JSON.stringify(v) : String(v);
-            const w = measureTextWidth(str, gridFont);
-            if (w > maxWidth) maxWidth = w;
-        }
-
-        // add padding for cell padding and sort icon
-        const padding = 28;
-        const width = Math.min(Math.max(maxWidth + padding, 40), 2000);
-
-        const def = { field: c, headerName: c, sortable: true, filter: true, width, cellRenderer: cellRendererFactory(tableName, c) };
-        if (isNumeric) {
-            def.cellClass = 'ag-right-aligned-cell';
-        }
-        return def;
-    });
-
-        rowsGridOptions = {
-            columnDefs,
-            rowData: rows,
-        rowSelection: 'single',
-            onCellClicked: async (params) => {
-                // follow clicked value to other tables (heuristic): search for exact value in other tables
-                const value = params.value;
-                if (value === null || value === undefined) return;
-                await followValue(tableName, params.colDef.field, value);
-            },
-            onCellMouseOver: (params) => {
-                // highlight tables that contain this value (hover)
-                const value = params.value;
-                if (value === null || value === undefined) return;
-                highlightTablesReferencingValue(value, tableName, params.colDef.field);
-            },
-            onFirstDataRendered: (params) => {
-                // auto-size columns to their content so rotated headers save space
-                try {
-                    const colIds = columnDefs.map(cd => cd.field);
-                    if (rowsGridOptions && rowsGridOptions.columnApi) {
-                        // pass `skipHeader=true` so header label width is ignored
-                        rowsGridOptions.columnApi.autoSizeColumns(colIds, true);
-                    } else if (params && params.columnApi) {
-                        params.columnApi.autoSizeColumns(colIds, true);
-                    }
-                } catch (e) {
-                    // ignore
-                }
-            },
-            defaultColDef: { resizable: true },
-            headerHeight: 72
-        };
-
-            if (rowsGrid) {
-                if (rowsGridOptions && rowsGridOptions.api) {
-                    rowsGridOptions.api.setColumnDefs(columnDefs);
-                    rowsGridOptions.api.setRowData(rows);
-                    // auto-size again after update
-                    setTimeout(() => {
-                        try {
-                            const colIds = columnDefs.map(cd => cd.field);
-                              rowsGridOptions.columnApi && rowsGridOptions.columnApi.autoSizeColumns(colIds, true);
-                        } catch (e) {}
-                    }, 50);
-                }
-                return;
-            }
-            rowsGrid = new Grid(rowsGridDiv, rowsGridOptions);
-            // after creation, auto-size columns once the grid API is available
-            setTimeout(() => {
-                try {
-                    const colIds = columnDefs.map(cd => cd.field);
-                    rowsGridOptions.columnApi && rowsGridOptions.columnApi.autoSizeColumns(colIds, true);
-                } catch (e) {}
-            }, 50);
-}
-
-function cellRendererFactory(tableName, columnName) {
-    return function(params) {
-        const v = params.value;
-        if (v === null || v === undefined) return '';
-        // Render primitives and small objects; show clickable style
-        const text = (typeof v === 'object') ? JSON.stringify(v) : String(v);
-        return `<span style="color:#0b64c6;cursor:pointer;text-decoration:underline;">${escapeHtml(text)}</span>`;
-    }
-}
-
-function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
-}
-
-function highlightTableInList(name) {
-    if (!tablesGridOptions || !tablesGridOptions.api) return;
-    tablesGridOptions.api.forEachNode(node => node.setSelected(node.data.name === name));
-}
-
-async function followValue(originTable, originCol, value) {
-    setStatus('Searching referenced tables...');
-    // search each other table for an exact match in any column (limit rows scanned)
-    for (const t of tables) {
-        if (t.name === originTable) continue;
-        try {
-            const tbl = tableMap.get(t.name);
-            // scan up to 10000 rows to avoid freeze
-            const data = tbl.getData({ rowLimit: 10000 });
-            for (let i = 0; i < data.length; ++i) {
-                const row = data[i];
-                for (const col of Object.keys(row)) {
-                    if (row[col] === value) {
-                        // found a referential match -- navigate
-                        selectTable(t.name);
-                        // after rendering, try to select the matching row in the rows grid
-                        setTimeout(() => {
-                            if (!rowsGrid) return;
-                            rowsGrid.api.forEachNode(node => node.setSelected(Object.values(node.data).some(v => v === value)));
-                            setStatus('Found match in ' + t.name);
-                        }, 50);
-                        return;
-                    }
-                }
-            }
-        } catch (e) {
+            // minimal overlay positioning — place exactly over the original header cell
+            headerOverlay.style.position = 'absolute';
+            headerOverlay.style.zIndex = '2147483647';
+            headerOverlay.style.left = (rect.left + window.scrollX) + 'px';
+            headerOverlay.style.top = (rect.top + window.scrollY) + 'px';
+            headerOverlay.style.width = rect.width + 'px';
+            headerOverlay.style.height = rect.height + 'px';
+            headerOverlay.style.boxSizing = 'border-box';
+            headerOverlay.style.pointerEvents = 'none';
+            // ensure it sits above everything and visually matches the header
+            const computedBg = window.getComputedStyle(headerCellEl).backgroundColor;
+            if (computedBg) headerOverlay.style.background = computedBg;
+            document.body.appendChild(headerOverlay);
+        } catch (err) {
             // ignore
         }
     }
-    setStatus('No matching value found in other tables');
-}
 
-function highlightTablesReferencingValue(value, originTable, originCol) {
-    // simple heuristic: mark tables that contain the hovered value in their first N rows
-    if (!tablesGridOptions || !tablesGridOptions.api) return;
-    tablesGridOptions.api.forEachNode(node => node.setRowClass(''));
-    tablesGridOptions.api.forEachNode(node => {
-        if (node.data.name === originTable) return;
-        try {
-            const tbl = tableMap.get(node.data.name);
-            const data = tbl.getData({ rowLimit: 200 });
-            const found = data.some(r => Object.values(r).some(v => v === value));
-            if (found) {
-                // add a CSS class to highlight
-                node.setRowClass('referenced-table');
-            }
-        } catch (e) { }
+    // attach listeners to show overlay when hovering any cell
+    try {
+        leftGridOptions.api.addEventListener('cellMouseOver', (e) => showHeaderOverlayForColumn(e.column));
+        leftGridOptions.api.addEventListener('cellMouseOut', () => removeHeaderOverlay());
+    } catch (err) {
+        // ignore if api not ready
+    }
+    try {
+        rightGridOptions.api.addEventListener('cellMouseOver', (e) => showHeaderOverlayForColumn(e.column));
+        rightGridOptions.api.addEventListener('cellMouseOut', () => removeHeaderOverlay());
+    } catch (err) {
+        // ignore
+    }
+
+    // Divider drag-to-resize logic
+    const divider = document.getElementById('divider');
+    const leftPanel = document.getElementById('left');
+    const rightPanel = document.getElementById('right');
+    let isDragging = false;
+    const minLeft = 160;
+    const maxLeft = 900;
+
+    divider.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
     });
-}
 
-// Add CSS for highlight rows (tables grid) via a style node
-const style = document.createElement('style');
-style.innerHTML = `
-.ag-row.referenced-table { background-color: rgba(255,230,130,0.4) !important; }
-`;
-document.head.appendChild(style);
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        // compute new left width relative to container
+        const containerRect = document.getElementById('container').getBoundingClientRect();
+        let newLeft = e.clientX - containerRect.left;
+        if (newLeft < minLeft) newLeft = minLeft;
+        if (newLeft > maxLeft) newLeft = maxLeft;
+        leftPanel.style.flex = `0 0 ${newLeft}px`;
+        leftPanel.style.width = `${newLeft}px`;
+        // let AG Grid recalculate layout
+        try { leftGridOptions.api.sizeColumnsToFit(); } catch (e) { /* ignore */ }
+        try { rightGridOptions.api.doLayout(); } catch (e) { /* ignore */ }
+    });
 
-// Attempt to restore previous file from localStorage on load
-tryLoadFromLocalStorage();
+    window.addEventListener('mouseup', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    });
+
+    function setStatus(text) {
+        status.innerText = text;
+    }
+
+    // Try to persist file to localStorage first (fast), but fall back to IndexedDB when quota is exceeded
+    function isQuotaError(err) {
+        if (!err) return false;
+        return (
+            err.name === 'QuotaExceededError' ||
+            err.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+            err.code === 22 ||
+            err.code === 1014
+        );
+    }
+
+    async function idbOpen() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open('mdb-reader', 1);
+            req.onupgradeneeded = (ev) => {
+                const db = ev.target.result;
+                if (!db.objectStoreNames.contains('files')) db.createObjectStore('files');
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+    }
+
+    async function idbSaveFile(file, name) {
+        const db = await idbOpen();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('files', 'readwrite');
+            const store = tx.objectStore('files');
+            const putReq = store.put({ file, name }, 'file');
+            putReq.onsuccess = () => {
+                db.close();
+                resolve();
+            };
+            putReq.onerror = () => {
+                db.close();
+                reject(putReq.error);
+            };
+        });
+    }
+
+    async function idbLoadFile() {
+        const db = await idbOpen();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('files', 'readonly');
+            const store = tx.objectStore('files');
+            const getReq = store.get('file');
+            getReq.onsuccess = async () => {
+                const entry = getReq.result;
+                db.close();
+                if (!entry) return resolve(null);
+                try {
+                    const ab = await entry.file.arrayBuffer();
+                    resolve({ arrayBuffer: ab, name: entry.name });
+                } catch (e) {
+                    resolve(null);
+                }
+            };
+            getReq.onerror = () => {
+                db.close();
+                reject(getReq.error);
+            };
+        });
+    }
+
+    async function idbDeleteFile() {
+        const db = await idbOpen();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('files', 'readwrite');
+            const store = tx.objectStore('files');
+            const del = store.delete('file');
+            del.onsuccess = () => { db.close(); resolve(); };
+            del.onerror = () => { db.close(); reject(del.error); };
+        });
+    }
+
+    function base64ToArrayBuffer(base64) {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+
+    async function saveFile(file) {
+        // Try localStorage first (encode to base64)
+        try {
+            const base64 = await fileToBase64(file);
+            try {
+                localStorage.setItem('mdb-base64', base64);
+                localStorage.setItem('mdb-name', file.name);
+                return 'localStorage';
+            } catch (err) {
+                if (isQuotaError(err)) {
+                    // fall back to IndexedDB
+                    await idbSaveFile(file, file.name);
+                    return 'indexedDB';
+                }
+                // other storage error: still try IndexedDB
+                console.warn('localStorage save failed', err);
+                await idbSaveFile(file, file.name);
+                return 'indexedDB';
+            }
+        } catch (err) {
+            // fileToBase64 failed or other problem - try IndexedDB storing the Blob directly
+            try {
+                await idbSaveFile(file, file.name);
+                return 'indexedDB';
+            } catch (e) {
+                console.warn('IndexedDB save failed', e);
+                throw e;
+            }
+        }
+    }
+
+    async function loadStoredFile() {
+        const base64 = localStorage.getItem('mdb-base64');
+        const name = localStorage.getItem('mdb-name');
+        if (base64) {
+            return { arrayBuffer: base64ToArrayBuffer(base64), name };
+        }
+        // try IndexedDB
+        try {
+            const entry = await idbLoadFile();
+            return entry; // may be null or {arrayBuffer, name}
+        } catch (e) {
+            console.warn('IndexedDB load failed', e);
+            return null;
+        }
+    }
+
+    async function handleFile(file) {
+        try {
+            const fr = new FileReader();
+            fr.onload = async (e) => {
+                try {
+                    const arrayBuffer = e.target.result;
+                    const buf = Buffer.from(arrayBuffer);
+                    reader = new MDBReader(buf);
+
+                    // persist the file: prefer localStorage, but fall back to IndexedDB when quota is hit
+                    try {
+                        const where = await saveFile(file);
+                        console.log('File persisted to', where);
+                    } catch (err) {
+                        console.warn('Could not persist file', err);
+                    }
+
+                    await buildTablesList();
+                    setStatus(file.name);
+                } catch (err) {
+                    console.error(err);
+                    setStatus('');
+                }
+            };
+            fr.readAsArrayBuffer(file);
+        } catch (err) {
+            console.error(err);
+            setStatus('');
+        }
+    }
+
+    function fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onerror = () => reject(r.error);
+            r.onload = () => {
+                // r.result is a data: URL like data:application/octet-stream;base64,AAA
+                const dataUrl = r.result;
+                const idx = dataUrl.indexOf(',');
+                resolve(dataUrl.slice(idx + 1));
+            };
+            r.readAsDataURL(file);
+        });
+    }
+
+    async function buildTablesList() {
+        try {
+            const names = reader.getTableNames();
+            const tables = await Promise.all(names.map(async (name) => {
+                try {
+                    const t = reader.getTable(name);
+                    const rc = t.rowCount;
+                    tableMap.set(name, t);
+                    return { name, rowCount: rc };
+                } catch (e) {
+                    return { name, rowCount: 0 };
+                }
+            }));
+
+            leftGridOptions.api.setRowData(tables);
+            // auto-select first table if present
+            if (tables.length > 0) {
+                leftGridOptions.api.forEachNode((node) => node.setSelected(node.rowIndex === 0));
+                showTable(tables[0].name);
+            } else {
+                rightGridOptions.api.setColumnDefs([]);
+                rightGridOptions.api.setRowData([]);
+            }
+        } catch (err) {
+            console.error('buildTablesList error', err);
+            setStatus('');
+        }
+    }
+
+    async function sampleRowsForTable(t, sampleSize = 1000) {
+        const rc = t.rowCount;
+        if (rc <= sampleSize) {
+            // small table: return all rows
+            return t.getData();
+        }
+
+        const blocks = 20; // number of blocks to fetch
+        const blockSize = Math.ceil(sampleSize / blocks);
+        const rows = [];
+        for (let i = 0; i < blocks; i++) {
+            if (rows.length >= sampleSize) break;
+            const offset = Math.floor((i * rc) / blocks);
+            try {
+                const chunk = t.getData({ rowOffset: offset, rowLimit: blockSize });
+                rows.push(...chunk);
+            } catch (e) {
+                // if a block fails, skip it
+                console.warn('sample block failed', e);
+            }
+        }
+        // Trim to sampleSize
+        return rows.slice(0, sampleSize);
+    }
+
+    function computeColumnWidths(columnNames, sampleRows) {
+        const maxLens = {};
+        for (const name of columnNames) maxLens[name] = 0;
+        for (const row of sampleRows) {
+            for (const name of columnNames) {
+                let v = row[name];
+                if (v === undefined || v === null) v = '';
+                const s = String(v);
+                if (s.length > maxLens[name]) maxLens[name] = s.length;
+            }
+        }
+
+        // px per character estimate. Increase slightly to reduce clipping.
+        const charWidth = 12; // px per character estimate
+        const cellPadding = 24; // extra pixels to account for cell padding, sort icon, etc.
+        const minWidth = 60;
+        const maxWidth = 800;
+        const widths = {};
+        for (const name of columnNames) {
+            const w = Math.ceil(maxLens[name] * charWidth) + cellPadding;
+            widths[name] = Math.min(Math.max(w, minWidth), maxWidth);
+        }
+        return widths;
+    }
+
+    function showTable(name) {
+        const t = tableMap.get(name);
+        if (!t) {
+            rightGridOptions.api.setColumnDefs([]);
+            rightGridOptions.api.setRowData([]);
+            return;
+        }
+
+        // get all data (beware large tables)
+        const rows = t.getData();
+
+        // derive column defs from column names if available
+        let columnNames = [];
+        try {
+            columnNames = t.getColumnNames();
+        } catch (e) {
+            if (rows.length > 0) columnNames = Object.keys(rows[0]);
+        }
+
+        // compute widths based on sample (ignore header label length)
+        (async () => {
+            try {
+                const sampleRows = await sampleRowsForTable(t, 1000);
+                const widths = computeColumnWidths(columnNames, sampleRows);
+                const cols = columnNames.map((c) => ({ field: c, headerName: c, sortable: true, filter: true, resizable: true, width: widths[c] || 100 }));
+                rightGridOptions.api.setColumnDefs(cols);
+                rightGridOptions.api.setRowData(rows);
+            } catch (err) {
+                console.warn('Could not compute column widths, falling back', err);
+                const cols = columnNames.map((c) => ({ field: c, headerName: c, sortable: true, filter: true, resizable: true }));
+                rightGridOptions.api.setColumnDefs(cols);
+                rightGridOptions.api.setRowData(rows);
+            }
+        })();
+
+        // highlight selected row in left grid
+        leftGridOptions.api.forEachNode((node) => node.setSelected(node.data && node.data.name === name));
+    }
+
+    // wire file input change and upload button
+    uploadBtn.addEventListener('click', () => input.click());
+    input.addEventListener('change', (e) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        handleFile(files[0]);
+    });
+
+    // drag & drop anywhere
+    function isAllowedFileName(name) {
+        if (!name) return false;
+        const n = name.toLowerCase();
+        return n.endsWith('.mdb') || n.endsWith('.accdb');
+    }
+
+    window.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+
+    window.addEventListener('dragenter', (e) => {
+        try {
+            if (e.dataTransfer && e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+                const item = e.dataTransfer.items[0];
+                let file = null;
+                try { file = item.getAsFile(); } catch (err) { /* ignore */ }
+                if (file && !isAllowedFileName(file.name)) {
+                    document.querySelector('.panel-controls').classList.add('drag-invalid');
+                } else {
+                    document.querySelector('.panel-controls').classList.remove('drag-invalid');
+                    document.querySelector('.panel-controls').classList.add('drag-valid');
+                }
+            }
+        } catch (err) {
+            // ignore
+        }
+        e.preventDefault();
+    });
+
+    window.addEventListener('dragleave', (e) => {
+        const pc = document.querySelector('.panel-controls');
+        if (pc) { pc.classList.remove('drag-invalid'); pc.classList.remove('drag-valid'); }
+    });
+
+    window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const pc = document.querySelector('.panel-controls');
+        if (pc) { pc.classList.remove('drag-invalid'); pc.classList.remove('drag-valid'); }
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            const f = e.dataTransfer.files[0];
+            if (!isAllowedFileName(f.name)) {
+                // briefly show invalid state
+                if (pc) pc.classList.add('drag-invalid');
+                setTimeout(() => { if (pc) pc.classList.remove('drag-invalid'); }, 1200);
+                return;
+            }
+            handleFile(f);
+        }
+    });
+
+    // attempt to load from localStorage on startup
+    (async function initFromStorage() {
+        try {
+            const entry = await loadStoredFile();
+            if (!entry || !entry.arrayBuffer) {
+                // no stored DB
+                setStatus('');
+                return;
+            }
+            const buf = Buffer.from(entry.arrayBuffer);
+            reader = new MDBReader(buf);
+            await buildTablesList();
+            // show filename only
+            setStatus(entry.name || '');
+        } catch (err) {
+            console.error('Could not restore DB from storage', err);
+            setStatus('');
+        }
+    })();
+
+});
 
