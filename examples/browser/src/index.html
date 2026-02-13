@@ -7,27 +7,28 @@
         <script type="module" src="index.mjs"></script>
     </head>
     <body>
+        <div class="toolbar">
+            <input type="file" id="fileInput" accept=".mdb,.accdb" style="display:none" />
+            <button id="uploadBtn" title="Upload file" aria-label="Upload" style="background:none;border:none;padding:4px;cursor:pointer">
+                <!-- upload SVG icon -->
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 3v10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M5 10l7-7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M21 21H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <span id="status"></span>
+        </div>
+
         <div id="container">
             <div id="left" class="panel left-panel">
-                <div class="panel-controls" style="padding:6px 8px; display:flex; gap:8px; align-items:center;">
-                    <input type="file" id="fileInput" accept=".mdb,.accdb" style="display:none" />
-                    <button id="uploadBtn" title="Upload file" aria-label="Upload" style="background:none;border:none;padding:4px;cursor:pointer">
-                        <!-- upload SVG icon -->
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M12 3v10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                            <path d="M5 10l7-7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                            <path d="M21 21H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                    </button>
-                    <span id="status"></span>
-                </div>
-                <div id="leftGrid" class="ag-theme-alpine grid"></div>
+                <div id="leftGrid" class="ag-theme-quartz grid"></div>
             </div>
 
             <div id="divider" class="divider" title="Drag to resize"></div>
 
             <div id="right" class="panel right-panel">
-                <div id="rightGrid" class="ag-theme-alpine grid"></div>
+                <div id="rightGrid" class="ag-theme-quartz grid"></div>
             </div>
         </div>
 
@@ -35,7 +36,8 @@
 
         <style>
             body { font-family: system-ui, -apple-system, Arial; margin: 0; height: 100vh; display: flex; flex-direction: column; }
-            #container{ display:flex; flex:1; gap:0; padding:12px }
+            .toolbar { padding:6px 12px; display:flex; gap:8px; align-items:center; background:#f7f7f7; border-bottom:1px solid #e5e5e5; }
+            #container{ display:flex; flex:1; gap:0; padding:12px; padding-top:0; }
             .panel{ display:flex; flex-direction:column; min-width:0 }
             .left-panel{ flex: 0 0 340px; width:340px; }
             .right-panel{ flex: 1 1 auto; }
@@ -44,8 +46,8 @@
             .grid{ flex:1; min-height:0; }
             #dropHint{ position:fixed; right:12px; bottom:12px; background:#222; color:#fff; padding:8px 12px; border-radius:6px; opacity:0.85; }
             input[type=file]{ padding:4px }
-            .panel-controls.drag-invalid { opacity: 0.35; }
-            .panel-controls.drag-valid { opacity: 1; }
+            .toolbar.drag-invalid { opacity: 0.35; }
+            .toolbar.drag-valid { opacity: 1; }
         </style>
 
     </body>

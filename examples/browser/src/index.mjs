@@ -1,9 +1,11 @@
 import { Buffer } from "buffer/";
 import MDBReader from "mdb-reader";
 
-import { Grid } from 'ag-grid-community';
-import 'ag-grid-community/styles/ag-grid.css';
-import 'ag-grid-community/styles/ag-theme-alpine.css';
+import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import 'ag-grid-community/styles/ag-theme-quartz.css';
+
+// Register AG Grid modules
+ModuleRegistry.registerModules([AllCommunityModule]);
 
 // Wrap all DOM-dependent initialisation in DOMContentLoaded so the script can live in <head>
 document.addEventListener('DOMContentLoaded', () => {
@@ -23,7 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
             { field: 'rowCount', headerName: 'Rows', sortable: true, filter: 'agNumberColumnFilter', width: 120 }
         ],
         rowData: [],
-        rowSelection: 'single',
+        rowSelection: { mode: 'singleRow', enableClickSelection: true, checkboxes: false },
         onRowClicked: (e) => {
             if (e && e.data) {
                 showTable(e.data.name);
@@ -35,12 +37,11 @@ document.addEventListener('DOMContentLoaded', () => {
         columnDefs: [],
         rowData: [],
         defaultColDef: { sortable: true, filter: true, resizable: true, floatingFilter: true },
-        animateRows: true,
-        suppressRowClickSelection: false
+        animateRows: true
     };
 
-    new Grid(leftGridDiv, leftGridOptions);
-    new Grid(rightGridDiv, rightGridOptions);
+    const leftGridApi = createGrid(leftGridDiv, leftGridOptions);
+    const rightGridApi = createGrid(rightGridDiv, rightGridOptions);
 
     // Divider drag-to-resize logic
     const divider = document.getElementById('divider');
@@ -66,8 +67,8 @@ document.addEventListener('DOMContentLoaded', () => {
         leftPanel.style.flex = `0 0 ${newLeft}px`;
         leftPanel.style.width = `${newLeft}px`;
         // let AG Grid recalculate layout
-        try { leftGridOptions.api.sizeColumnsToFit(); } catch (e) { /* ignore */ }
-        try { rightGridOptions.api.doLayout(); } catch (e) { /* ignore */ }
+        try { leftGridApi.sizeColumnsToFit(); } catch (e) { /* ignore */ }
+        try { rightGridApi.doLayout(); } catch (e) { /* ignore */ }
     });
 
     window.addEventListener('mouseup', () => {
@@ -272,14 +273,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }));
 
-            leftGridOptions.api.setRowData(tables);
+            leftGridApi.setGridOption('rowData', tables);
             // auto-select first table if present
             if (tables.length > 0) {
-                leftGridOptions.api.forEachNode((node) => node.setSelected(node.rowIndex === 0));
+                leftGridApi.forEachNode((node) => node.setSelected(node.rowIndex === 0));
                 showTable(tables[0].name);
             } else {
-                rightGridOptions.api.setColumnDefs([]);
-                rightGridOptions.api.setRowData([]);
+                rightGridApi.setGridOption('columnDefs', []);
+                rightGridApi.setGridOption('rowData', []);
             }
         } catch (err) {
             console.error('buildTablesList error', err);
@@ -313,16 +314,26 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function computeColumnWidths(columnNames, sampleRows) {
-        const maxLens = {};
-        for (const name of columnNames) maxLens[name] = 0;
+        // Collect all lengths for each column to compute percentile
+        const lengths = {};
+        for (const name of columnNames) lengths[name] = [];
+        
         for (const row of sampleRows) {
             for (const name of columnNames) {
                 let v = row[name];
                 if (v === undefined || v === null) v = '';
                 const s = String(v);
-                if (s.length > maxLens[name]) maxLens[name] = s.length;
+                lengths[name].push(s.length);
             }
         }
+
+        // Use 75th percentile (3/4 median) instead of max to avoid outliers
+        const percentile75 = (arr) => {
+            if (arr.length === 0) return 0;
+            const sorted = [...arr].sort((a, b) => a - b);
+            const index = Math.floor(sorted.length * 0.75);
+            return sorted[index];
+        };
 
         // px per character estimate. Increase slightly to reduce clipping.
         const charWidth = 12; // px per character estimate
@@ -331,7 +342,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const maxWidth = 800;
         const widths = {};
         for (const name of columnNames) {
-            const w = Math.ceil(maxLens[name] * charWidth) + cellPadding;
+            const len75 = percentile75(lengths[name]);
+            const w = Math.ceil(len75 * charWidth) + cellPadding;
             widths[name] = Math.min(Math.max(w, minWidth), maxWidth);
         }
         return widths;
@@ -340,8 +352,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function showTable(name) {
         const t = tableMap.get(name);
         if (!t) {
-            rightGridOptions.api.setColumnDefs([]);
-            rightGridOptions.api.setRowData([]);
+            rightGridApi.setGridOption('columnDefs', []);
+            rightGridApi.setGridOption('rowData', []);
             return;
         }
 
@@ -362,18 +374,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 const sampleRows = await sampleRowsForTable(t, 1000);
                 const widths = computeColumnWidths(columnNames, sampleRows);
                 const cols = columnNames.map((c) => ({ field: c, headerName: c, sortable: true, filter: true, resizable: true, width: widths[c] || 100 }));
-                rightGridOptions.api.setColumnDefs(cols);
-                rightGridOptions.api.setRowData(rows);
+                rightGridApi.setGridOption('columnDefs', cols);
+                rightGridApi.setGridOption('rowData', rows);
+                
+                // If columns don't fill the width, expand them proportionally
+                setTimeout(() => {
+                    try {
+                        const gridWidth = rightGridDiv.clientWidth;
+                        const totalColWidth = Object.values(widths).reduce((sum, w) => sum + w, 0);
+                        if (totalColWidth < gridWidth - 50) { // -50 for scrollbar
+                            rightGridApi.sizeColumnsToFit();
+                        }
+                    } catch (e) { /* ignore */ }
+                }, 100);
             } catch (err) {
                 console.warn('Could not compute column widths, falling back', err);
                 const cols = columnNames.map((c) => ({ field: c, headerName: c, sortable: true, filter: true, resizable: true }));
-                rightGridOptions.api.setColumnDefs(cols);
-                rightGridOptions.api.setRowData(rows);
+                rightGridApi.setGridOption('columnDefs', cols);
+                rightGridApi.setGridOption('rowData', rows);
+                setTimeout(() => {
+                    try { rightGridApi.sizeColumnsToFit(); } catch (e) { /* ignore */ }
+                }, 100);
             }
         })();
 
         // highlight selected row in left grid
-        leftGridOptions.api.forEachNode((node) => node.setSelected(node.data && node.data.name === name));
+        leftGridApi.forEachNode((node) => node.setSelected(node.data && node.data.name === name));
     }
 
     // wire file input change and upload button
@@ -400,10 +426,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 let file = null;
                 try { file = item.getAsFile(); } catch (err) { /* ignore */ }
                 if (file && !isAllowedFileName(file.name)) {
-                    document.querySelector('.panel-controls').classList.add('drag-invalid');
+                    document.querySelector('.toolbar').classList.add('drag-invalid');
                 } else {
-                    document.querySelector('.panel-controls').classList.remove('drag-invalid');
-                    document.querySelector('.panel-controls').classList.add('drag-valid');
+                    document.querySelector('.toolbar').classList.remove('drag-invalid');
+                    document.querySelector('.toolbar').classList.add('drag-valid');
                 }
             }
         } catch (err) {
@@ -413,13 +439,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     window.addEventListener('dragleave', (e) => {
-        const pc = document.querySelector('.panel-controls');
+        const pc = document.querySelector('.toolbar');
         if (pc) { pc.classList.remove('drag-invalid'); pc.classList.remove('drag-valid'); }
     });
 
     window.addEventListener('drop', (e) => {
         e.preventDefault();
-        const pc = document.querySelector('.panel-controls');
+        const pc = document.querySelector('.toolbar');
         if (pc) { pc.classList.remove('drag-invalid'); pc.classList.remove('drag-valid'); }
         if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
             const f = e.dataTransfer.files[0];
