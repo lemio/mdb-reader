@@ -11,6 +11,7 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 document.addEventListener('DOMContentLoaded', () => {
     const input = document.getElementById('fileInput');
     const uploadBtn = document.getElementById('uploadBtn');
+    const resetBtn = document.getElementById('resetBtn');
     const status = document.getElementById('status');
 
     const leftGridDiv = document.getElementById('leftGrid');
@@ -37,8 +38,28 @@ document.addEventListener('DOMContentLoaded', () => {
         columnDefs: [],
         rowData: [],
         defaultColDef: { sortable: true, filter: true, resizable: true, floatingFilter: true },
-        animateRows: true
+        animateRows: true,
+        onColumnResized: (params) => {
+            if (params.finished && params.source !== 'sizeColumnsToFit') {
+                saveCurrentTableColumnState();
+            }
+        },
+        onColumnMoved: (params) => {
+            if (params.finished) {
+                saveCurrentTableColumnState();
+            }
+        }
     };
+
+    let currentTableName = null;
+    let suppressColumnStateSave = false; // Flag to prevent saving during table switching
+
+    function saveCurrentTableColumnState() {
+        if (currentTableName && rightGridApi && !suppressColumnStateSave) {
+            const columnState = rightGridApi.getColumnState();
+            saveColumnState(currentTableName, columnState);
+        }
+    }
 
     const leftGridApi = createGrid(leftGridDiv, leftGridOptions);
     const rightGridApi = createGrid(rightGridDiv, rightGridOptions);
@@ -80,6 +101,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function setStatus(text) {
         status.innerText = text;
+        // Show reset button when a file is loaded
+        resetBtn.style.display = text ? 'inline-block' : 'none';
     }
 
     // Try to persist file to localStorage first (fast), but fall back to IndexedDB when quota is exceeded
@@ -95,10 +118,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function idbOpen() {
         return new Promise((resolve, reject) => {
-            const req = indexedDB.open('mdb-reader', 1);
+            const req = indexedDB.open('mdb-reader', 2); // Increment version for new object store
             req.onupgradeneeded = (ev) => {
                 const db = ev.target.result;
                 if (!db.objectStoreNames.contains('files')) db.createObjectStore('files');
+                if (!db.objectStoreNames.contains('columnStates')) db.createObjectStore('columnStates');
             };
             req.onsuccess = () => resolve(req.result);
             req.onerror = () => reject(req.error);
@@ -214,6 +238,77 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Column state management
+    async function saveColumnState(tableName, columnState) {
+        const key = `columnState_${tableName}`;
+        try {
+            // Try localStorage first
+            try {
+                localStorage.setItem(key, JSON.stringify(columnState));
+            } catch (err) {
+                if (isQuotaError(err)) {
+                    // Fall back to IndexedDB
+                    const db = await idbOpen();
+                    const tx = db.transaction('columnStates', 'readwrite');
+                    const store = tx.objectStore('columnStates');
+                    store.put(columnState, tableName);
+                    db.close();
+                }
+            }
+        } catch (err) {
+            console.warn('Failed to save column state', err);
+        }
+    }
+
+    async function loadColumnState(tableName) {
+        const key = `columnState_${tableName}`;
+        try {
+            // Try localStorage first
+            const stored = localStorage.getItem(key);
+            if (stored) return JSON.parse(stored);
+            
+            // Try IndexedDB
+            const db = await idbOpen();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('columnStates', 'readonly');
+                const store = tx.objectStore('columnStates');
+                const req = store.get(tableName);
+                req.onsuccess = () => {
+                    db.close();
+                    resolve(req.result || null);
+                };
+                req.onerror = () => {
+                    db.close();
+                    reject(req.error);
+                };
+            });
+        } catch (err) {
+            console.warn('Failed to load column state', err);
+            return null;
+        }
+    }
+
+    async function clearAllColumnStates() {
+        try {
+            // Clear from localStorage
+            const keys = Object.keys(localStorage);
+            for (const key of keys) {
+                if (key.startsWith('columnState_')) {
+                    localStorage.removeItem(key);
+                }
+            }
+            
+            // Clear from IndexedDB
+            const db = await idbOpen();
+            const tx = db.transaction('columnStates', 'readwrite');
+            const store = tx.objectStore('columnStates');
+            store.clear();
+            db.close();
+        } catch (err) {
+            console.warn('Failed to clear column states', err);
+        }
+    }
+
     async function handleFile(file) {
         try {
             const fr = new FileReader();
@@ -222,6 +317,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const arrayBuffer = e.target.result;
                     const buf = Buffer.from(arrayBuffer);
                     reader = new MDBReader(buf);
+
+                    // Clear all column states when new file is uploaded
+                    await clearAllColumnStates();
 
                     // persist the file: prefer localStorage, but fall back to IndexedDB when quota is hit
                     try {
@@ -322,7 +420,24 @@ document.addEventListener('DOMContentLoaded', () => {
             for (const name of columnNames) {
                 let v = row[name];
                 if (v === undefined || v === null) v = '';
-                const s = String(v);
+                
+                // Special handling for Date objects - format as simple datetime without timezone
+                // AG Grid displays dates as locale string, so calculate width based on that
+                let s;
+                if (v instanceof Date) {
+                    // Format as "MM/DD/YYYY, HH:MM:SS AM/PM" which is typical locale format
+                    s = v.toLocaleString('en-US', { 
+                        year: 'numeric', 
+                        month: '2-digit', 
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                    });
+                } else {
+                    s = String(v);
+                }
+                
                 lengths[name].push(s.length);
             }
         }
@@ -350,10 +465,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showTable(name) {
+        suppressColumnStateSave = true; // Prevent auto-save during table switch
+        currentTableName = name; // Track current table for column state saving
         const t = tableMap.get(name);
         if (!t) {
             rightGridApi.setGridOption('columnDefs', []);
             rightGridApi.setGridOption('rowData', []);
+            suppressColumnStateSave = false;
             return;
         }
 
@@ -368,32 +486,129 @@ document.addEventListener('DOMContentLoaded', () => {
             if (rows.length > 0) columnNames = Object.keys(rows[0]);
         }
 
-        // compute widths based on sample (ignore header label length)
+        // Check for saved column state first, then compute widths if needed
         (async () => {
             try {
-                const sampleRows = await sampleRowsForTable(t, 1000);
-                const widths = computeColumnWidths(columnNames, sampleRows);
-                const cols = columnNames.map((c) => ({ field: c, headerName: c, sortable: true, filter: true, resizable: true, width: widths[c] || 100 }));
+                const savedState = await loadColumnState(name);
+                
+                if (savedState && savedState.length > 0) {
+                    // Use saved state - no need to compute widths
+                    const cols = columnNames.map((c) => ({
+                        field: c,
+                        headerName: c,
+                        sortable: true,
+                        filter: true,
+                        resizable: true,
+                        valueFormatter: (params) => {
+                            // Format Date objects with time
+                            if (params.value instanceof Date) {
+                                return params.value.toLocaleString('en-US', {
+                                    year: 'numeric',
+                                    month: '2-digit',
+                                    day: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    second: '2-digit'
+                                });
+                            }
+                            return params.value;
+                        }
+                    }));
+                    
+                    rightGridApi.setGridOption('columnDefs', cols);
+                    rightGridApi.setGridOption('rowData', rows);
+                    
+                    // Apply saved column state
+                    setTimeout(() => {
+                        try {
+                            rightGridApi.applyColumnState({ state: savedState, applyOrder: true });
+                            suppressColumnStateSave = false;
+                        } catch (e) {
+                            console.warn('Failed to apply column state', e);
+                            suppressColumnStateSave = false;
+                        }
+                    }, 100);
+                } else {
+                    // No saved state - compute widths from data
+                    const sampleRows = await sampleRowsForTable(t, 1000);
+                    const widths = computeColumnWidths(columnNames, sampleRows);
+                    
+                    // Create column definitions with computed widths
+                    const cols = columnNames.map((c) => ({
+                        field: c,
+                        headerName: c,
+                        sortable: true,
+                        filter: true,
+                        resizable: true,
+                        width: widths[c] || 100,
+                        valueFormatter: (params) => {
+                            // Format Date objects with time
+                            if (params.value instanceof Date) {
+                                return params.value.toLocaleString('en-US', {
+                                    year: 'numeric',
+                                    month: '2-digit',
+                                    day: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    second: '2-digit'
+                                });
+                            }
+                            return params.value;
+                        }
+                    }));
+                    
+                    rightGridApi.setGridOption('columnDefs', cols);
+                    rightGridApi.setGridOption('rowData', rows);
+                    
+                    // Check if we need to expand columns to fill width
+                    setTimeout(() => {
+                        try {
+                            const gridWidth = rightGridDiv.clientWidth;
+                            const totalColWidth = Object.values(widths).reduce((sum, w) => sum + w, 0);
+                            if (totalColWidth < gridWidth - 50) { // -50 for scrollbar
+                                rightGridApi.sizeColumnsToFit();
+                            }
+                            suppressColumnStateSave = false;
+                        } catch (e) {
+                            console.warn('Failed to size columns', e);
+                            suppressColumnStateSave = false;
+                        }
+                    }, 100);
+                }
+            } catch (err) {
+                console.warn('Error loading table, falling back', err);
+                const cols = columnNames.map((c) => ({
+                    field: c,
+                    headerName: c,
+                    sortable: true,
+                    filter: true,
+                    resizable: true,
+                    valueFormatter: (params) => {
+                        if (params.value instanceof Date) {
+                            return params.value.toLocaleString('en-US', {
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit'
+                            });
+                        }
+                        return params.value;
+                    }
+                }));
                 rightGridApi.setGridOption('columnDefs', cols);
                 rightGridApi.setGridOption('rowData', rows);
-                
-                // If columns don't fill the width, expand them proportionally
-                setTimeout(() => {
+                setTimeout(async () => {
                     try {
-                        const gridWidth = rightGridDiv.clientWidth;
-                        const totalColWidth = Object.values(widths).reduce((sum, w) => sum + w, 0);
-                        if (totalColWidth < gridWidth - 50) { // -50 for scrollbar
+                        const savedState = await loadColumnState(name);
+                        if (savedState && savedState.length > 0) {
+                            rightGridApi.applyColumnState({ state: savedState, applyOrder: true });
+                        } else {
                             rightGridApi.sizeColumnsToFit();
                         }
                     } catch (e) { /* ignore */ }
-                }, 100);
-            } catch (err) {
-                console.warn('Could not compute column widths, falling back', err);
-                const cols = columnNames.map((c) => ({ field: c, headerName: c, sortable: true, filter: true, resizable: true }));
-                rightGridApi.setGridOption('columnDefs', cols);
-                rightGridApi.setGridOption('rowData', rows);
-                setTimeout(() => {
-                    try { rightGridApi.sizeColumnsToFit(); } catch (e) { /* ignore */ }
+                    suppressColumnStateSave = false;
                 }, 100);
             }
         })();
@@ -408,6 +623,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const files = e.target.files;
         if (!files || files.length === 0) return;
         handleFile(files[0]);
+    });
+
+    // Reset button - clears column states and reloads current table
+    resetBtn.addEventListener('click', async () => {
+        await clearAllColumnStates();
+        if (currentTableName) {
+            showTable(currentTableName);
+        }
     });
 
     // drag & drop anywhere
