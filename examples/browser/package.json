@@ -4,7 +4,7 @@
     "source": "src/index.html",
     "scripts": {
         "dev": "rimraf dist && parcel",
-        "build": "rimraf dist && parcel build"
+        "build": "rimraf dist && parcel build --public-url ."
     },
     "dependencies": {
         "ag-grid-community": "^35.1.0",
