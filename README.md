@@ -68,7 +68,7 @@ table.getData(); // [{id: 5, name: 'Ashley', color: 'black'}, ...]
 
 ## Examples
 
-- [`browser`](examples/browser) - Running in the browser with parcel
+- [`browser`](examples/browser) - Running in the browser with parcel ([Live Demo](https://lemio.github.io/mdb-reader/))
 - [`to-json`](examples/to-json) - CLI script that accepts a database file name and outputs the data as JSON
 - [`sveltekit`](examples/sveltekit) - Running with SvelteKit
 
